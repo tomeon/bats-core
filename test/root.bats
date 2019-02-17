@@ -13,12 +13,17 @@
 
 load test_helper
 
+BATS_ROOT=
+
 # This would make a good candidate for a one-time setup/teardown per #39.
 setup() {
+
   make_bats_test_suite_tmpdir
   cd "$BATS_TEST_SUITE_TMPDIR"
   mkdir -p {usr/bin,opt/bats-core}
-  "$BATS_ROOT/install.sh" "opt/bats-core"
+
+  BATS_ROOT="${BATS_TEST_DIRNAME%/*}"
+  "${BATS_ROOT}/install.sh" "opt/bats-core"
 
   ln -s "usr/bin" "bin"
 
