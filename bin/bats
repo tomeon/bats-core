@@ -2,43 +2,115 @@
 
 set -e
 
-BATS_READLINK='true'
-if command -v 'greadlink' >/dev/null; then
-  BATS_READLINK='greadlink'
-elif command -v 'readlink' >/dev/null; then
-  BATS_READLINK='readlink'
+if command -v 'realpath' >/dev/null; then
+  bats_realpath() {
+    realpath "$1"
+  }
+elif command -v 'greadlink' >/dev/null; then
+  bats_realpath() {
+    greadlink -f -- "$1"
+  }
+elif readlink -f / &>/dev/null; then
+  bats_realpath() {
+    readlink -f -- "$1"
+  }
+elif command -v 'perl' >/dev/null; then
+  bats_realpath() {
+    perl -MCwd -wle '
+      my $p= $ARGV[0];
+      if ( -e $p ) {
+        print Cwd::realpath($p);
+      }
+      else {
+        require File::Basename;
+        require File::Spec;
+        my ( $basename, $dirname ) = File::Basename::fileparse($p);
+        print File::Spec->catfile( Cwd::realpath($dirname), $basename );
+      }
+    ' -- "$1"
+  }
+elif command -v 'python' >/dev/null; then
+  bats_realpath() {
+    # Python command string can't have any leading whitespace; that's a
+    # SyntaxError.
+    python -c '
+import os.path
+import sys
+
+p = sys.argv[1]
+
+if os.path.exists(p):
+  print(os.path.realpath(p))
+else:
+  print(os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p)))
+    ' "$1"
+  }
+elif command -v 'ruby' >/dev/null; then
+  bats_realpath() {
+    ruby -rpathname -e '
+      p = Pathname.new(ARGV.first)
+      puts p.exist? ? p.realpath : p.parent.realpath.join(p.basename)
+    ' -- "$1"
+  }
+else
+  bats_realpath() (
+    if (( $# != 1 )); then
+      return 1
+    fi
+
+    if ! command -v 'readlink' >/dev/null; then
+      readlink() {
+        return 1
+      }
+    fi
+
+    _bats_realpath() {
+      if [[ -d "$1" ]]; then
+        cd -P "$1" && pwd -P
+        return
+      fi
+
+      local target="$1"
+      shift
+
+      if [[ "$target" == */* ]]; then
+        cd -P "${target%/*}"
+      fi
+
+      local dirname=''
+      dirname="$(pwd -P)"
+
+      local partial="${dirname}/${target##*/}"
+
+      local seen=''
+      for seen in "$@"; do
+        if [ "$seen" == "$partial" ]; then
+          return 1
+        fi
+      done
+
+      if [[ -L "$partial" ]] && link="$(readlink -- "$partial")"; then
+        "${FUNCNAME[0]}" "$link" "$partial" "$@"
+      else
+        printf '%s\n' "$partial"
+      fi
+    }
+
+    local status=0
+    _bats_realpath "$1" || status="$?"
+    unset -f readlink _bats_realpath &>/dev/null
+    return "$status"
+  )
 fi
 
-bats_resolve_absolute_root_dir() {
-  local cwd="$PWD"
-  local path="$1"
-  local result="$2"
-  local target_dir
-  local target_name
-  local original_shell_options="$-"
+bats_cmd="$0"
+if [[ "$bats_cmd" != */* ]]; then
+  bats_cmd="$(command -v "$bats_cmd")"
+fi
 
-  # Resolve the parent directory, e.g. /bin => /usr/bin on CentOS (#113).
-  set -P
+bats_realpath="$(bats_realpath "$bats_cmd")" || exit
 
-  while true; do
-    target_dir="${path%/*}"
-    target_name="${path##*/}"
+export BATS_ROOT="${bats_realpath%/*}"
+BATS_ROOT="${BATS_ROOT%/*}"
 
-    if [[ "$target_dir" != "$path" ]]; then
-      cd "$target_dir"
-    fi
-
-    if [[ -L "$target_name" ]]; then
-      path="$("$BATS_READLINK" "$target_name")"
-    else
-      printf -v "$result" -- '%s' "${PWD%/*}"
-      set +P "-$original_shell_options"
-      cd "$cwd"
-      return
-    fi
-  done
-}
-
-export BATS_ROOT
-bats_resolve_absolute_root_dir "$0" 'BATS_ROOT'
 exec "$BATS_ROOT/libexec/bats-core/bats" "$@"
